@@ -1,78 +1,80 @@
 #!/usr/bin/python3
-"""
-Contains the class DBStorage
+"""Simple DBStorage using SQLAlchemy.
+
+This file provides a small wrapper used by the rest of the project. It defaults
+to a local SQLite file for development when EDMS_MYSQL_DB is not provided. It
+imports project models (e.g. Account) so SQLAlchemy metadata is registered and
+created on reload().
 """
 
-from server.base import Base, base_model
 from os import getenv
-import sqlalchemy
-from sqlalchemy import create_engine
-from sqlalchemy.orm import scoped_session, sessionmaker
+from typing import Optional
 
-classes = {"Amenity": Amenity, "City": City,
-           "Place": Place, "Review": Review, "State": State, "User": User}
+from sqlalchemy import create_engine
+from sqlalchemy.orm import scoped_session, sessionmaker, Session as SASession
+
+# Import Base and models so metadata is populated
+from server.base import Base
+# Import models that should be registered in metadata
+from server.account import Account  # ensure the Account table exists
 
 
 class DBStorage:
-    """interaacts with the MySQL database"""
-    __engine = None
-    __session = None
+    """A minimal SQLAlchemy-backed storage class used by the app.
+
+    Methods are intentionally small and synchronous; they mirror the small set
+    of actions used by the codebase (new, save, delete, get, count, list).
+    """
 
     def __init__(self):
-        """Instantiate a DBStorage object"""
-        EDMS_MYSQL_DB = getenv('EDMS_MYSQL_DB')
-        EDMS_ENV = getenv('EDMS_ENV')
-        self.__engine = create_engine('sqlite///{}'.
-                                      format(EDMS_MYSQL_DB))
-        if EDMS_ENV == "test":
-            Base.metadata.drop_all(self.__engine)
+        db_url = getenv("EDMS_MYSQL_DB") or "sqlite:///./edms.db"
+        # support URLs like sqlite:///./edms.db or a full postgres/mysql URL
+        self.__engine = create_engine(db_url, echo=False, future=True)
+        self.__session_factory = scoped_session(sessionmaker(bind=self.__engine, expire_on_commit=False))
+        self.__session: Optional[SASession] = None
 
-    def all(self, cls=None):
-        """query on the current database session"""
-        new_dict = {}
-        for clss in classes:
-            if cls is None or cls is classes[clss] or cls is clss:
-                objs = self.__session.query(classes[clss]).all()
-                for obj in objs:
-                    key = obj.__class__.__name__ + '.' + obj.id
-                    new_dict[key] = obj
-        return (new_dict)
+    def reload(self):
+        """Create tables and prepare a session factory."""
+        Base.metadata.create_all(self.__engine)
+        self.__session = self.__session_factory
 
     def new(self, obj):
-        """add the object to the current database session"""
+        """Add obj to current session."""
+        if self.__session is None:
+            self.reload()
         self.__session.add(obj)
 
     def save(self):
-        """commit all changes of the current database session"""
+        """Commit current session."""
+        if self.__session is None:
+            self.reload()
         self.__session.commit()
 
     def delete(self, obj=None):
-        """delete from the current database session obj if not None"""
-        if obj is not None:
-            self.__session.delete(obj)
-
-    def reload(self):
-        """reloads data from the database"""
-        Base.metadata.create_all(self.__engine)
-        sess_factory = sessionmaker(bind=self.__engine, expire_on_commit=False)
-        Session = scoped_session(sess_factory)
-        self.__session = Session
-
-    def close(self):
-        """call remove() method on the private session attribute"""
-        self.__session.remove()
+        """Delete obj from session if provided."""
+        if obj is None:
+            return
+        if self.__session is None:
+            self.reload()
+        self.__session.delete(obj)
+        self.__session.commit()
 
     def get(self, cls, id):
-        """Retrieve objects from storage"""
-        objs = self.__session.query(cls).filter_by(id=id).first()
-        return objs
+        """Return an instance of cls by primary key id or None."""
+        if self.__session is None:
+            self.reload()
+        return self.__session.query(cls).filter_by(id=id).first()
 
     def count(self, cls=None):
-        """count the number of objects in storage """
+        """Return count of objects. If cls is None, count rows for known models."""
+        if self.__session is None:
+            self.reload()
         if cls is None:
-            count = 0
-            for clss in classes.values():
-                count += self.__session.query(clss).count()
-        else:
-            count = self.__session.query(cls).count()
-        return count
+            # For now only Account is a registered model in this project.
+            return self.__session.query(Account).count()
+        return self.__session.query(cls).count()
+
+    def close(self):
+        """Remove the scoped session."""
+        if self.__session is not None:
+            self.__session.remove()
