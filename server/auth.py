@@ -5,11 +5,11 @@ from typing import Optional
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
+from os import getenv
 
-from server.crud import get_account_by_username
 
 # Secret configuration - for production keep this in env vars / secrets manager
-SECRET_KEY = "replace-this-secret"
+SECRET_KEY = getenv("SECRET_KEY", None)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 day
 
